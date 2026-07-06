@@ -124,6 +124,71 @@ def execute_sql(cursor, query, params=None):
         else:
             cursor.execute(query)
 
+
+def sql_now():
+    """Current timestamp expression for the active database."""
+    return "NOW()" if USE_POSTGRES else "datetime('now')"
+
+
+def sql_age_years_from_dob(dob_column='date_of_birth'):
+    """Expression that returns age in whole years from a date_of_birth column."""
+    if USE_POSTGRES:
+        return f"EXTRACT(YEAR FROM AGE(CURRENT_DATE, {dob_column}::date))"
+    return f"(strftime('%Y', 'now') - strftime('%Y', {dob_column}))"
+
+
+def fetch_last_insert_id(cursor):
+    """Read inserted row id after INSERT (PostgreSQL requires RETURNING)."""
+    if USE_POSTGRES:
+        row = cursor.fetchone()
+        return row['id'] if row else None
+    return cursor.lastrowid
+
+
+def table_exists(cursor, table_name):
+    """Check whether a table exists in the current database."""
+    if USE_POSTGRES:
+        execute_sql(
+            cursor,
+            "SELECT 1 FROM information_schema.tables WHERE table_name = ?",
+            (table_name,),
+        )
+    else:
+        execute_sql(
+            cursor,
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (table_name,),
+        )
+    return cursor.fetchone() is not None
+
+
+def column_exists(cursor, table_name, column_name):
+    """Check whether a column exists on a table."""
+    if USE_POSTGRES:
+        execute_sql(
+            cursor,
+            """
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = ? AND column_name = ?
+            """,
+            (table_name, column_name),
+        )
+    else:
+        execute_sql(cursor, f"PRAGMA table_info({table_name})")
+        columns = [row[1] for row in cursor.fetchall()]
+        return column_name in columns
+    return cursor.fetchone() is not None
+
+def execute_many(cursor, query, params_list):
+    """Execute the same SQL for many parameter sets."""
+    if not params_list:
+        return
+    if USE_POSTGRES:
+        cursor.executemany(query.replace('?', '%s'), params_list)
+    else:
+        cursor.executemany(query, params_list)
+
+
 def init_db():
     """Initialize the database with necessary tables."""
     try:
@@ -403,18 +468,32 @@ def create_user(username, password=None, email=None, first_name=None, last_name=
         from timezone_utils import get_philippines_time_for_db
         ph_timestamp = get_philippines_time_for_db()
         
-        execute_sql(cursor,
-            """
-            INSERT INTO users 
-            (username, password_hash, email, first_name, last_name, gender, 
-             date_of_birth, medical_id, is_admin, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (username, password_hash, email, first_name, last_name, gender, 
-             date_of_birth, normalized_medical_id, is_admin, ph_timestamp)
-        )
-        conn.commit()
-        user_id = cursor.lastrowid
+        if USE_POSTGRES:
+            execute_sql(cursor,
+                """
+                INSERT INTO users 
+                (username, password_hash, email, first_name, last_name, gender, 
+                 date_of_birth, medical_id, is_admin, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                RETURNING id
+                """,
+                (username, password_hash, email, first_name, last_name, gender, 
+                 date_of_birth, normalized_medical_id, is_admin, ph_timestamp)
+            )
+            user_id = fetch_last_insert_id(cursor)
+        else:
+            execute_sql(cursor,
+                """
+                INSERT INTO users 
+                (username, password_hash, email, first_name, last_name, gender, 
+                 date_of_birth, medical_id, is_admin, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (username, password_hash, email, first_name, last_name, gender, 
+                 date_of_birth, normalized_medical_id, is_admin, ph_timestamp)
+            )
+            conn.commit()
+            user_id = fetch_last_insert_id(cursor)
         
         # Create empty medical_data entry for the user
         execute_sql(cursor,
@@ -516,20 +595,28 @@ def update_user(user_id, **kwargs):
     values.append(user_id)
     
     try:
-        cursor.execute(sql, values)
+        execute_sql(cursor, sql, tuple(values))
         conn.commit()
         conn.close()
         return True, "User updated successfully."
-    except sqlite3.IntegrityError as e:
+    except Exception as e:
         conn.close()
-        if "UNIQUE constraint failed: users.username" in str(e):
-            return False, "Username already exists."
-        elif "UNIQUE constraint failed: users.email" in str(e):
-            return False, "Email already exists."
-        elif "UNIQUE constraint failed: users.medical_id" in str(e):
-            return False, "Medical ID already exists."
+        error_msg = str(e)
+        if USE_POSTGRES:
+            if "users_username_key" in error_msg:
+                return False, "Username already exists."
+            elif "users_email_key" in error_msg:
+                return False, "Email already exists."
+            elif "users_medical_id_key" in error_msg:
+                return False, "Medical ID already exists."
         else:
-            return False, str(e)
+            if "UNIQUE constraint failed: users.username" in error_msg:
+                return False, "Username already exists."
+            elif "UNIQUE constraint failed: users.email" in error_msg:
+                return False, "Email already exists."
+            elif "UNIQUE constraint failed: users.medical_id" in error_msg:
+                return False, "Medical ID already exists."
+        return False, error_msg
 
 
 # def add_classification_record(user_id, hemoglobin, predicted_class, confidence, recommendation, notes=None):
@@ -586,14 +673,25 @@ def add_classification_record(*args, **kwargs):
         recommendation = kwargs.get('recommendation')
         notes = kwargs.get('notes')
 
-        cursor.execute(
-            """
-            INSERT INTO classification_history
-            (user_id, hgb, predicted_class, confidence, recommendation, notes, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (user_id, hgb, predicted_class, confidence, recommendation, notes, ph_now)
-        )
+        if USE_POSTGRES:
+            execute_sql(cursor,
+                """
+                INSERT INTO classification_history
+                (user_id, hgb, predicted_class, confidence, recommendation, notes, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                RETURNING id
+                """,
+                (user_id, hgb, predicted_class, confidence, recommendation, notes, ph_now)
+            )
+        else:
+            execute_sql(cursor,
+                """
+                INSERT INTO classification_history
+                (user_id, hgb, predicted_class, confidence, recommendation, notes, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (user_id, hgb, predicted_class, confidence, recommendation, notes, ph_now)
+            )
 
     else:
         # Full CBC form - pick values from kwargs, defaulting to 0 or None where sensible
@@ -630,20 +728,22 @@ def add_classification_record(*args, **kwargs):
         recommendation = kwargs.get('recommendation')
         notes = kwargs.get('notes')
 
-        cursor.execute(
-            """
+        insert_sql = """
             INSERT INTO classification_history 
             (user_id, wbc, rbc, hgb, hct, mcv, mch, mchc, plt,
              neutrophils, lymphocytes, monocytes, eosinophils, basophil, immature_granulocytes,
              patient_name, patient_age, patient_gender,
              predicted_class, confidence, recommendation, notes, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            tuple([user_id] + values + [predicted_class, confidence, recommendation, notes, ph_now])
-        )
+        """
+        insert_params = tuple([user_id] + values + [predicted_class, confidence, recommendation, notes, ph_now])
+        if USE_POSTGRES:
+            execute_sql(cursor, insert_sql + " RETURNING id", insert_params)
+        else:
+            execute_sql(cursor, insert_sql, insert_params)
 
     conn.commit()
-    record_id = cursor.lastrowid
+    record_id = fetch_last_insert_id(cursor)
     conn.close()
 
     return record_id
@@ -710,8 +810,8 @@ def get_user_classification_history(user_id, limit=10):
     """Get classification history for a specific user."""
     conn = get_db_connection()
     cursor = conn.cursor()
-    
-    cursor.execute(
+
+    execute_sql(cursor,
         """
         SELECT * FROM classification_history 
         WHERE user_id = ? 
@@ -720,10 +820,10 @@ def get_user_classification_history(user_id, limit=10):
         """,
         (user_id, limit)
     )
-    
+
     history = [dict(row) for row in cursor.fetchall()]
     conn.close()
-    
+
     return history
 
 
@@ -731,8 +831,8 @@ def get_all_classification_history(limit=100):
     """Get all classification history (legacy, limited). Prefer get_classification_history_paginated."""
     conn = get_db_connection()
     cursor = conn.cursor()
-    
-    cursor.execute(
+
+    execute_sql(cursor,
         """
         SELECT ch.*, u.username, u.first_name, u.last_name
         FROM classification_history ch
@@ -742,10 +842,10 @@ def get_all_classification_history(limit=100):
         """,
         (limit,)
     )
-    
+
     history = [dict(row) for row in cursor.fetchall()]
     conn.close()
-    
+
     return history
 
 def get_classification_history_paginated(page=1, per_page=5):
@@ -763,7 +863,7 @@ def get_classification_history_paginated(page=1, per_page=5):
     total = cursor.fetchone()['total']
     
     # Get paginated results
-    cursor.execute(
+    execute_sql(cursor,
         """
         SELECT ch.*, u.username, u.first_name, u.last_name
         FROM classification_history ch
@@ -852,7 +952,7 @@ def get_all_users(limit=100):
     """Get all users (legacy, limited). Prefer get_users_paginated."""
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute(
+    execute_sql(cursor,
         """
         SELECT id, username, email, first_name, last_name, gender, 
                date_of_birth, medical_id, is_admin, created_at, last_login
@@ -890,7 +990,7 @@ def get_users_paginated(page=1, per_page=5):
         page = 1
     offset = (page - 1) * per_page
 
-    cursor.execute(
+    execute_sql(cursor,
         """
         SELECT id, username, email, first_name, last_name, gender,
                date_of_birth, medical_id, is_admin, created_at, last_login
@@ -956,15 +1056,15 @@ def update_medical_data(user_id, **kwargs):
         # Update existing record
         sql = f"UPDATE medical_data SET {', '.join(set_clauses)} WHERE user_id = ?"
         values.append(user_id)
-        cursor.execute(sql, values)
+        execute_sql(cursor, sql, tuple(values))
     else:
         # Insert new record
         keys = [key for key, _ in kwargs.items() if key in ['height', 'weight', 'blood_type', 'medical_conditions', 'medications']]
         keys.append('user_id')
         values.append(user_id)
-        
+
         sql = f"INSERT INTO medical_data ({', '.join(keys)}) VALUES ({', '.join(['?'] * len(keys))})"
-        cursor.execute(sql, values)
+        execute_sql(cursor, sql, tuple(values))
     
     conn.commit()
     conn.close()
@@ -1181,7 +1281,7 @@ def get_classification_record(record_id):
     cursor = conn.cursor()
     
     try:
-        cursor.execute("""
+        execute_sql(cursor, """
             SELECT * FROM classification_history 
             WHERE id = ?
         """, (record_id,))
@@ -1204,7 +1304,7 @@ def get_user_by_id(user_id):
     cursor = conn.cursor()
     
     try:
-        cursor.execute("""
+        execute_sql(cursor, """
             SELECT * FROM users 
             WHERE id = ?
         """, (user_id,))
@@ -1264,15 +1364,17 @@ def get_admin_dashboard_charts():
     """Get data for admin dashboard charts: age groups, gender distribution, and severity classification."""
     conn = get_db_connection()
     cursor = conn.cursor()
-    
+
+    age_years = sql_age_years_from_dob('date_of_birth')
+
     # Age groups distribution
-    cursor.execute("""
+    execute_sql(cursor, f"""
         SELECT 
             CASE 
-                WHEN (strftime('%Y', 'now') - strftime('%Y', date_of_birth)) < 18 THEN 'Under 18'
-                WHEN (strftime('%Y', 'now') - strftime('%Y', date_of_birth)) BETWEEN 18 AND 30 THEN '18-30'
-                WHEN (strftime('%Y', 'now') - strftime('%Y', date_of_birth)) BETWEEN 31 AND 45 THEN '31-45'
-                WHEN (strftime('%Y', 'now') - strftime('%Y', date_of_birth)) BETWEEN 46 AND 60 THEN '46-60'
+                WHEN ({age_years}) < 18 THEN 'Under 18'
+                WHEN ({age_years}) BETWEEN 18 AND 30 THEN '18-30'
+                WHEN ({age_years}) BETWEEN 31 AND 45 THEN '31-45'
+                WHEN ({age_years}) BETWEEN 46 AND 60 THEN '46-60'
                 ELSE 'Over 60'
             END as age_group,
             COUNT(*) as count
@@ -1289,18 +1391,18 @@ def get_admin_dashboard_charts():
             END
     """)
     age_groups = {row['age_group']: row['count'] for row in cursor.fetchall()}
-    
+
     # Gender distribution
-    cursor.execute("""
+    execute_sql(cursor, """
         SELECT gender, COUNT(*) as count
         FROM users 
         WHERE gender IS NOT NULL AND is_admin = 0
         GROUP BY gender
     """)
     gender_stats = {row['gender']: row['count'] for row in cursor.fetchall()}
-    
+
     # Severity classification distribution
-    cursor.execute("""
+    execute_sql(cursor, """
         SELECT 
             CASE 
                 WHEN predicted_class LIKE '%Normal%' OR predicted_class LIKE '%normal%' THEN 'Normal'
@@ -1323,9 +1425,9 @@ def get_admin_dashboard_charts():
             END
     """)
     severity_stats = {row['severity']: row['count'] for row in cursor.fetchall()}
-    
+
     conn.close()
-    
+
     return {
         'age_groups': age_groups,
         'gender_stats': gender_stats,
@@ -1342,12 +1444,19 @@ def create_imported_file(filename, original_filename, total_records, imported_by
     from timezone_utils import get_philippines_time_for_db
     ph_timestamp = get_philippines_time_for_db()
     
-    cursor.execute('''
-        INSERT INTO imported_files (filename, original_filename, total_records, imported_by, imported_at)
-        VALUES (?, ?, ?, ?, ?)
-    ''', (filename, original_filename, total_records, imported_by, ph_timestamp))
-    
-    file_id = cursor.lastrowid
+    if USE_POSTGRES:
+        execute_sql(cursor, '''
+            INSERT INTO imported_files (filename, original_filename, total_records, imported_by, imported_at)
+            VALUES (?, ?, ?, ?, ?)
+            RETURNING id
+        ''', (filename, original_filename, total_records, imported_by, ph_timestamp))
+    else:
+        execute_sql(cursor, '''
+            INSERT INTO imported_files (filename, original_filename, total_records, imported_by, imported_at)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (filename, original_filename, total_records, imported_by, ph_timestamp))
+
+    file_id = fetch_last_insert_id(cursor)
     conn.commit()
     conn.close()
     
@@ -1360,17 +1469,12 @@ def get_imported_files():
     cursor = conn.cursor()
     
     # Check if imported_files table exists
-    cursor.execute("""
-        SELECT name FROM sqlite_master 
-        WHERE type='table' AND name='imported_files'
-    """)
-    
-    if not cursor.fetchone():
+    if not table_exists(cursor, 'imported_files'):
         print("imported_files table does not exist")
         conn.close()
         return []
-    
-    cursor.execute('''
+
+    execute_sql(cursor, '''
         SELECT 
             f.id,
             f.original_filename as filename,
@@ -1406,7 +1510,7 @@ def update_file_status(file_id, is_applied):
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    cursor.execute('''
+    execute_sql(cursor, '''
         UPDATE imported_files 
         SET is_applied = ?
         WHERE id = ?
@@ -1436,14 +1540,11 @@ def get_applied_imported_data():
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # Check if file_id column exists
-    cursor.execute("PRAGMA table_info(classification_import_data)")
-    columns = [column[1] for column in cursor.fetchall()]
-    has_file_id = 'file_id' in columns
-    
+    has_file_id = column_exists(cursor, 'classification_import_data', 'file_id')
+
     if has_file_id:
         # Age groups from applied imported data
-        cursor.execute('''
+        execute_sql(cursor, '''
             SELECT 
                 CASE 
                     WHEN age < 18 THEN 'Under 18'
@@ -1461,7 +1562,7 @@ def get_applied_imported_data():
         age_groups = {row['age_group']: row['count'] for row in cursor.fetchall()}
         
         # Gender stats from applied imported data
-        cursor.execute('''
+        execute_sql(cursor, '''
             SELECT gender, COUNT(*) as count
             FROM classification_import_data cid
             JOIN imported_files f ON cid.file_id = f.id
@@ -1469,9 +1570,9 @@ def get_applied_imported_data():
             GROUP BY gender
         ''')
         gender_stats = {row['gender']: row['count'] for row in cursor.fetchall()}
-        
+
         # Severity stats from applied imported data
-        cursor.execute('''
+        execute_sql(cursor, '''
             SELECT category, COUNT(*) as count
             FROM classification_import_data cid
             JOIN imported_files f ON cid.file_id = f.id
@@ -1481,7 +1582,7 @@ def get_applied_imported_data():
         severity_stats = {row['category']: row['count'] for row in cursor.fetchall()}
     else:
         # Fallback to old format - get all imported data
-        cursor.execute('''
+        execute_sql(cursor, '''
             SELECT 
                 CASE 
                     WHEN age < 18 THEN 'Under 18'
@@ -1496,14 +1597,14 @@ def get_applied_imported_data():
         ''')
         age_groups = {row['age_group']: row['count'] for row in cursor.fetchall()}
         
-        cursor.execute('''
+        execute_sql(cursor, '''
             SELECT gender, COUNT(*) as count
             FROM classification_import_data
             GROUP BY gender
         ''')
         gender_stats = {row['gender']: row['count'] for row in cursor.fetchall()}
-        
-        cursor.execute('''
+
+        execute_sql(cursor, '''
             SELECT category, COUNT(*) as count
             FROM classification_import_data
             GROUP BY category
@@ -1685,7 +1786,7 @@ def store_otp_verification(email, otp_code, username, password_hash, first_name,
         print(f"Deleted existing OTP records for {email}")
         
         # Insert new OTP data
-        cursor.execute('''
+        execute_sql(cursor, '''
             INSERT INTO otp_verification 
             (email, otp_code, username, password_hash, first_name, last_name, gender, date_of_birth, medical_id, expires_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1719,7 +1820,7 @@ def verify_otp_code(email, otp_code):
         print(f"Verifying OTP: email={email}, code={otp_code}")
         
         # First, check if there's any OTP record for this email
-        cursor.execute('''
+        execute_sql(cursor, '''
             SELECT * FROM otp_verification 
             WHERE email = ?
         ''', (email,))
@@ -1731,9 +1832,9 @@ def verify_otp_code(email, otp_code):
             print(f"Record: email={record['email']}, code={record['otp_code']}, expires={record['expires_at']}")
         
         # Now check for valid OTP
-        cursor.execute('''
+        execute_sql(cursor, f'''
             SELECT * FROM otp_verification 
-            WHERE email = ? AND otp_code = ? AND expires_at > datetime('now')
+            WHERE email = ? AND otp_code = ? AND expires_at > {sql_now()}
         ''', (email, otp_code))
         
         result = cursor.fetchone()
@@ -1742,7 +1843,7 @@ def verify_otp_code(email, otp_code):
         if result:
             print(f"OTP is valid, creating user account")
             # Mark as verified
-            cursor.execute('''
+            execute_sql(cursor, '''
                 UPDATE otp_verification 
                 SET is_verified = 1 
                 WHERE email = ? AND otp_code = ?
@@ -1774,7 +1875,7 @@ def cleanup_expired_otp():
     cursor = conn.cursor()
     
     try:
-        cursor.execute('DELETE FROM otp_verification WHERE expires_at < datetime("now")')
+        execute_sql(cursor, f'DELETE FROM otp_verification WHERE expires_at < {sql_now()}')
         conn.commit()
     except Exception as e:
         print(f"Error cleaning up expired OTP: {e}")
@@ -1791,7 +1892,7 @@ def update_otp_code(email, otp_code, expires_at):
         print(f"Updating OTP: email={email}, code={otp_code}, expires={expires_at}")
         
         # Update the OTP code and expiry time
-        cursor.execute('''
+        execute_sql(cursor, '''
             UPDATE otp_verification 
             SET otp_code = ?, expires_at = ?, is_verified = 0
             WHERE email = ?
@@ -1822,7 +1923,7 @@ def store_password_reset_otp(email, otp_code, expires_at):
         execute_sql(cursor, 'DELETE FROM password_reset_otp WHERE email = ?', (email,))
         
         # Insert new password reset OTP data
-        cursor.execute('''
+        execute_sql(cursor, '''
             INSERT INTO password_reset_otp (email, otp_code, expires_at)
             VALUES (?, ?, ?)
         ''', (email, otp_code, expires_at))
@@ -1842,15 +1943,15 @@ def verify_password_reset_otp(email, otp_code):
     cursor = conn.cursor()
     
     try:
-        cursor.execute('''
+        execute_sql(cursor, f'''
             SELECT * FROM password_reset_otp 
-            WHERE email = ? AND otp_code = ? AND expires_at > datetime('now')
+            WHERE email = ? AND otp_code = ? AND expires_at > {sql_now()}
         ''', (email, otp_code))
         
         result = cursor.fetchone()
         if result:
             # Mark as verified
-            cursor.execute('''
+            execute_sql(cursor, '''
                 UPDATE password_reset_otp 
                 SET is_verified = 1 
                 WHERE email = ? AND otp_code = ?
@@ -1871,9 +1972,9 @@ def cleanup_password_reset_otp():
     cursor = conn.cursor()
     
     try:
-        cursor.execute('''
+        execute_sql(cursor, f'''
             DELETE FROM password_reset_otp 
-            WHERE expires_at < datetime('now')
+            WHERE expires_at < {sql_now()}
         ''')
         conn.commit()
         return True
@@ -1938,7 +2039,7 @@ def get_other_person_classifications(limit=100):
     """Return recent classifications that were submitted for another person (legacy detection via notes)."""
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute(
+    execute_sql(cursor,
         """
         SELECT ch.*, u.username, u.first_name, u.last_name
         FROM classification_history ch
@@ -1968,7 +2069,7 @@ def get_other_person_classifications_paginated(page=1, per_page=5):
     total = cursor.fetchone()['total']
     
     # Page data with username
-    cursor.execute(
+    execute_sql(cursor,
         """
         SELECT ch.*, u.username
         FROM classification_history ch

@@ -1240,7 +1240,7 @@ def result(record_id):
     conn = db.get_db_connection()
     cursor = conn.cursor()
     
-    cursor.execute(
+    db.execute_sql(cursor,
         "SELECT * FROM classification_history WHERE id = ? AND user_id = ?",
         (record_id, current_user.id)
     )
@@ -2059,16 +2059,17 @@ def import_classification_data():
         conn = db.get_db_connection()
         cursor = conn.cursor()
         
-        # Ensure the table exists
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS classification_import_data (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                age INTEGER NOT NULL,
-                gender TEXT NOT NULL,
-                category TEXT NOT NULL,
-                imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
+        # Ensure the table exists (SQLite fallback; PostgreSQL tables come from init_db)
+        if not db.USE_POSTGRES:
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS classification_import_data (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    age INTEGER NOT NULL,
+                    gender TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
         
         # Create imported file record
         print(f"Creating imported file record for: {file.filename}")
@@ -2125,12 +2126,12 @@ def import_classification_data():
         if batch_data:
             try:
                 if has_file_id:
-                    cursor.executemany('''
+                    db.execute_many(cursor, '''
                         INSERT INTO classification_import_data (age, gender, category, file_id, imported_at)
                         VALUES (?, ?, ?, ?, ?)
                     ''', batch_data)
                 else:
-                    cursor.executemany('''
+                    db.execute_many(cursor, '''
                         INSERT INTO classification_import_data (age, gender, category, imported_at)
                         VALUES (?, ?, ?, ?)
                     ''', batch_data)
@@ -2140,12 +2141,12 @@ def import_classification_data():
                 for row_data in batch_data:
                     try:
                         if has_file_id:
-                            cursor.execute('''
+                            db.execute_sql(cursor, '''
                                 INSERT INTO classification_import_data (age, gender, category, file_id, imported_at)
                                 VALUES (?, ?, ?, ?, ?)
                             ''', row_data)
                         else:
-                            cursor.execute('''
+                            db.execute_sql(cursor, '''
                                 INSERT INTO classification_import_data (age, gender, category, imported_at)
                                 VALUES (?, ?, ?, ?)
                             ''', row_data)
@@ -2153,7 +2154,7 @@ def import_classification_data():
                         continue
         
         # Update the total records count
-        cursor.execute('''
+        db.execute_sql(cursor, '''
             UPDATE imported_files 
             SET total_records = ?
             WHERE id = ?
@@ -2417,7 +2418,7 @@ def export_classification_history():
     # Get all classification history with extended user fields
     conn = db.get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("""
+    db.execute_sql(cursor, """
         SELECT ch.*,
                u.username, u.first_name, u.last_name, u.gender as user_gender, u.date_of_birth
         FROM classification_history ch
@@ -2582,7 +2583,8 @@ def admin_classification_details(record_id):
     conn = db.get_db_connection()
     cursor = conn.cursor()
     
-    cursor.execute("""
+    db.execute_sql(cursor,
+        """
         SELECT ch.*, u.username, u.first_name, u.last_name, u.email
         FROM classification_history ch
         LEFT JOIN users u ON ch.user_id = u.id
@@ -2632,7 +2634,8 @@ def admin_edit_classification(record_id):
     conn = db.get_db_connection()
     cursor = conn.cursor()
     
-    cursor.execute("""
+    db.execute_sql(cursor,
+        """
         SELECT ch.*, u.username
         FROM classification_history ch
         LEFT JOIN users u ON ch.user_id = u.id
@@ -2681,7 +2684,7 @@ def admin_edit_classification(record_id):
         conn = db.get_db_connection()
         cursor = conn.cursor()
         
-        cursor.execute("""
+        db.execute_sql(cursor, """
             UPDATE classification_history 
             SET wbc = ?, rbc = ?, hgb = ?, hct = ?, mcv = ?, mch = ?, mchc = ?, plt = ?,
                 neutrophils = ?, lymphocytes = ?, monocytes = ?, eosinophils = ?, basophil = ?, immature_granulocytes = ?,
@@ -2711,7 +2714,8 @@ def admin_delete_classification(record_id):
     conn = db.get_db_connection()
     cursor = conn.cursor()
     
-    cursor.execute("""
+    db.execute_sql(cursor,
+        """
         SELECT ch.*, u.username
         FROM classification_history ch
         LEFT JOIN users u ON ch.user_id = u.id
@@ -2725,7 +2729,7 @@ def admin_delete_classification(record_id):
         return jsonify({'success': False, 'error': 'Record not found'}), 404
     
     # Delete the record
-    cursor.execute("DELETE FROM classification_history WHERE id = ?", (record_id,))
+    db.execute_sql(cursor, "DELETE FROM classification_history WHERE id = ?", (record_id,))
     
     conn.commit()
     conn.close()
@@ -2744,7 +2748,7 @@ def admin_delete_all_classifications():
     try:
         conn = db.get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM classification_history")
+        db.execute_sql(cursor, "DELETE FROM classification_history")
         conn.commit()
         conn.close()
         logger.warning(f"Admin {current_user.username} deleted ALL classification records")
@@ -2805,7 +2809,7 @@ def admin_classification_filtered_data():
     # Order by date descending
     query += " ORDER BY ch.created_at DESC"
     
-    cursor.execute(query, params)
+    db.execute_sql(cursor, query, tuple(params) if params else None)
     records = cursor.fetchall()
     
     # Also fetch filtered "another person" entries
@@ -2833,7 +2837,7 @@ def admin_classification_filtered_data():
         op_params.append(date_to)
     op_query += " ORDER BY ch.created_at DESC"
     cursor2 = db.get_db_connection().cursor()
-    cursor2.execute(op_query, op_params)
+    db.execute_sql(cursor2, op_query, tuple(op_params) if op_params else None)
     other_records = cursor2.fetchall()
     cursor2.connection.close()
     conn.close()
@@ -2878,14 +2882,14 @@ def admin_classification_available_users():
     cursor = conn.cursor()
     
     # Get unique usernames from classification history
-    cursor.execute("""
+    db.execute_sql(cursor, """
         SELECT DISTINCT u.username
         FROM classification_history ch
         LEFT JOIN users u ON ch.user_id = u.id
         ORDER BY u.username
     """)
     
-    users = [row[0] for row in cursor.fetchall()]
+    users = [row['username'] for row in cursor.fetchall()]
     conn.close()
     
     return jsonify({

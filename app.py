@@ -3028,7 +3028,7 @@ def admin_delete_message():
         cursor = conn.cursor()
         
         # Check if message belongs to current admin
-        cursor.execute('SELECT sender_id FROM chat_messages WHERE id = ?', (message_id,))
+        db.execute_sql(cursor, 'SELECT sender_id FROM chat_messages WHERE id = ?', (message_id,))
         message = cursor.fetchone()
         
         if not message:
@@ -3038,7 +3038,7 @@ def admin_delete_message():
             return jsonify({'success': False, 'error': 'You can only delete your own messages'}), 403
         
         # Delete the message
-        cursor.execute('DELETE FROM chat_messages WHERE id = ?', (message_id,))
+        db.execute_sql(cursor, 'DELETE FROM chat_messages WHERE id = ?', (message_id,))
         
         conn.commit()
         conn.close()
@@ -3069,10 +3069,10 @@ def admin_delete_conversation():
         cursor = conn.cursor()
         
         # Delete all messages from this conversation
-        cursor.execute('DELETE FROM chat_messages WHERE conversation_id = ?', (conversation_id,))
+        db.execute_sql(cursor, 'DELETE FROM chat_messages WHERE conversation_id = ?', (conversation_id,))
         
         # Delete the conversation itself
-        cursor.execute('DELETE FROM chat_conversations WHERE id = ?', (conversation_id,))
+        db.execute_sql(cursor, 'DELETE FROM chat_conversations WHERE id = ?', (conversation_id,))
         
         conn.commit()
         conn.close()
@@ -3196,7 +3196,7 @@ def user_clear_chat_history():
         cursor = conn.cursor()
         
         # Delete all messages from this conversation
-        cursor.execute('DELETE FROM chat_messages WHERE conversation_id = ?', (conversation_id,))
+        db.execute_sql(cursor, 'DELETE FROM chat_messages WHERE conversation_id = ?', (conversation_id,))
         
         conn.commit()
         conn.close()
@@ -3224,7 +3224,7 @@ def user_delete_message():
         cursor = conn.cursor()
         
         # Check if message belongs to current user
-        cursor.execute('SELECT sender_id FROM chat_messages WHERE id = ?', (message_id,))
+        db.execute_sql(cursor, 'SELECT sender_id FROM chat_messages WHERE id = ?', (message_id,))
         message = cursor.fetchone()
         
         if not message:
@@ -3234,7 +3234,7 @@ def user_delete_message():
             return jsonify({'success': False, 'error': 'You can only delete your own messages'}), 403
         
         # Delete the message
-        cursor.execute('DELETE FROM chat_messages WHERE id = ?', (message_id,))
+        db.execute_sql(cursor, 'DELETE FROM chat_messages WHERE id = ?', (message_id,))
         
         conn.commit()
         conn.close()
@@ -3282,10 +3282,10 @@ def admin_clear_chat_data():
         cursor = conn.cursor()
         
         # Clear all messages
-        cursor.execute('DELETE FROM chat_messages')
+        db.execute_sql(cursor, 'DELETE FROM chat_messages')
         
         # Clear all conversations
-        cursor.execute('DELETE FROM chat_conversations')
+        db.execute_sql(cursor, 'DELETE FROM chat_conversations')
         
         conn.commit()
         conn.close()

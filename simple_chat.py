@@ -2,40 +2,24 @@
 """
 Simple Chat System Models
 """
-import sqlite3
-import os
-from datetime import datetime
+from database import (
+    get_db_connection,
+    execute_sql,
+    USE_POSTGRES,
+    get_id_type,
+    get_integer_type,
+)
 
-def get_db_connection():
-    """Get database connection using the same path resolution as main app."""
-    # Use the same database path resolution logic as database.py
-    default_local_db = 'anemia_classification.db'
-    env_db_path = os.environ.get('DATABASE_PATH')
-    volume_mount = os.environ.get('RAILWAY_VOLUME_MOUNT_PATH')
-    running_on_railway = any(k in os.environ for k in [
-        'RAILWAY_PROJECT_ID', 'RAILWAY_ENVIRONMENT', 'RAILWAY_STATIC_URL', 'RAILWAY_GIT_COMMIT_SHA'
-    ])
-
-    if env_db_path:
-        db_path = env_db_path
-    elif volume_mount:
-        db_path = os.path.join(volume_mount, 'anemocheck', default_local_db)
-    elif running_on_railway:
-        # Common default mount path for Railway volumes
-        db_path = os.path.join('/data', 'anemocheck', default_local_db)
-    else:
-        db_path = default_local_db
-
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    return conn
 
 def init_chat_tables():
-    """Initialize chat tables."""
+    """Initialize chat tables (SQLite only; PostgreSQL tables are created in database.init_db)."""
+    if USE_POSTGRES:
+        print("Chat tables managed by PostgreSQL init_db.")
+        return
+
     conn = get_db_connection()
     cursor = conn.cursor()
-    
-    # Create conversations table
+
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS chat_conversations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,8 +30,7 @@ def init_chat_tables():
             FOREIGN KEY (admin_id) REFERENCES users (id)
         )
     ''')
-    
-    # Create messages table
+
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS chat_messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,27 +42,34 @@ def init_chat_tables():
             FOREIGN KEY (sender_id) REFERENCES users (id)
         )
     ''')
-    
+
     conn.commit()
     conn.close()
     print("Simple chat tables initialized successfully.")
+
 
 def create_conversation(user_id, admin_id=None):
     """Create a new conversation."""
     conn = get_db_connection()
     cursor = conn.cursor()
-    
+
     try:
-        # Use Philippines time for timestamp
         from timezone_utils import get_philippines_time_for_db
         ph_timestamp = get_philippines_time_for_db()
-        
-        cursor.execute('''
-            INSERT INTO chat_conversations (user_id, admin_id, created_at)
-            VALUES (?, ?, ?)
-        ''', (user_id, admin_id, ph_timestamp))
-        
-        conversation_id = cursor.lastrowid
+
+        if USE_POSTGRES:
+            execute_sql(cursor, '''
+                INSERT INTO chat_conversations (user_id, admin_id, created_at)
+                VALUES (?, ?, ?) RETURNING id
+            ''', (user_id, admin_id, ph_timestamp))
+            conversation_id = cursor.fetchone()['id']
+        else:
+            execute_sql(cursor, '''
+                INSERT INTO chat_conversations (user_id, admin_id, created_at)
+                VALUES (?, ?, ?)
+            ''', (user_id, admin_id, ph_timestamp))
+            conversation_id = cursor.lastrowid
+
         conn.commit()
         return True, conversation_id
     except Exception as e:
@@ -87,22 +77,29 @@ def create_conversation(user_id, admin_id=None):
     finally:
         conn.close()
 
+
 def send_message(conversation_id, sender_id, message_text):
     """Send a message."""
     conn = get_db_connection()
     cursor = conn.cursor()
-    
+
     try:
-        # Use Philippines time for timestamp
         from timezone_utils import get_philippines_time_for_db
         ph_timestamp = get_philippines_time_for_db()
-        
-        cursor.execute('''
-            INSERT INTO chat_messages (conversation_id, sender_id, message_text, created_at)
-            VALUES (?, ?, ?, ?)
-        ''', (conversation_id, sender_id, message_text, ph_timestamp))
-        
-        message_id = cursor.lastrowid
+
+        if USE_POSTGRES:
+            execute_sql(cursor, '''
+                INSERT INTO chat_messages (conversation_id, sender_id, message_text, created_at)
+                VALUES (?, ?, ?, ?) RETURNING id
+            ''', (conversation_id, sender_id, message_text, ph_timestamp))
+            message_id = cursor.fetchone()['id']
+        else:
+            execute_sql(cursor, '''
+                INSERT INTO chat_messages (conversation_id, sender_id, message_text, created_at)
+                VALUES (?, ?, ?, ?)
+            ''', (conversation_id, sender_id, message_text, ph_timestamp))
+            message_id = cursor.lastrowid
+
         conn.commit()
         return True, message_id
     except Exception as e:
@@ -110,19 +107,20 @@ def send_message(conversation_id, sender_id, message_text):
     finally:
         conn.close()
 
+
 def get_conversation_messages(conversation_id):
     """Get messages for a conversation."""
     conn = get_db_connection()
     cursor = conn.cursor()
-    
-    cursor.execute('''
+
+    execute_sql(cursor, '''
         SELECT m.*, u.username, u.first_name, u.last_name
         FROM chat_messages m
         JOIN users u ON m.sender_id = u.id
         WHERE m.conversation_id = ?
         ORDER BY m.created_at ASC
     ''', (conversation_id,))
-    
+
     messages = []
     for row in cursor.fetchall():
         messages.append({
@@ -134,17 +132,18 @@ def get_conversation_messages(conversation_id):
             'first_name': row['first_name'],
             'last_name': row['last_name']
         })
-    
+
     conn.close()
     return messages
+
 
 def get_user_conversations(user_id, is_admin=False):
     """Get conversations for a user with last message info."""
     conn = get_db_connection()
     cursor = conn.cursor()
-    
+
     if is_admin:
-        cursor.execute('''
+        execute_sql(cursor, '''
             SELECT c.*, u.username, u.first_name, u.last_name,
                    (SELECT COUNT(*) FROM chat_messages WHERE conversation_id = c.id) as message_count,
                    (SELECT message_text FROM chat_messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) as last_message,
@@ -155,7 +154,7 @@ def get_user_conversations(user_id, is_admin=False):
             ORDER BY COALESCE((SELECT created_at FROM chat_messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1), c.created_at) DESC
         ''', (user_id,))
     else:
-        cursor.execute('''
+        execute_sql(cursor, '''
             SELECT c.*, u.username, u.first_name, u.last_name,
                    (SELECT COUNT(*) FROM chat_messages WHERE conversation_id = c.id) as message_count,
                    (SELECT message_text FROM chat_messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) as last_message,
@@ -165,7 +164,7 @@ def get_user_conversations(user_id, is_admin=False):
             WHERE c.user_id = ?
             ORDER BY COALESCE((SELECT created_at FROM chat_messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1), c.created_at) DESC
         ''', (user_id,))
-    
+
     conversations = []
     for row in cursor.fetchall():
         conversations.append({
@@ -180,21 +179,22 @@ def get_user_conversations(user_id, is_admin=False):
             'last_message': row['last_message'],
             'last_message_time': row['last_message_time']
         })
-    
+
     conn.close()
     return conversations
+
 
 def get_all_users():
     """Get all users."""
     conn = get_db_connection()
     cursor = conn.cursor()
-    
-    cursor.execute('''
+
+    execute_sql(cursor, '''
         SELECT id, username, first_name, last_name, email, is_admin
         FROM users
         ORDER BY username
     ''')
-    
+
     users = []
     for row in cursor.fetchall():
         users.append({
@@ -205,6 +205,6 @@ def get_all_users():
             'email': row['email'],
             'is_admin': row['is_admin']
         })
-    
+
     conn.close()
     return users

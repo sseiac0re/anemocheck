@@ -291,9 +291,10 @@ def init_db():
     CREATE TABLE IF NOT EXISTS chat_conversations (
         id {get_id_type()},
         user_id {get_integer_type()} NOT NULL,
-        title {get_text_type()},
+        admin_id {get_integer_type()},
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users(id)
+        FOREIGN KEY (user_id) REFERENCES users(id),
+        FOREIGN KEY (admin_id) REFERENCES users(id)
     )
     ''')
     
@@ -302,12 +303,19 @@ def init_db():
     CREATE TABLE IF NOT EXISTS chat_messages (
         id {get_id_type()},
         conversation_id {get_integer_type()} NOT NULL,
-        role {get_text_type()} NOT NULL,
-        content {get_text_type()} NOT NULL,
+        sender_id {get_integer_type()} NOT NULL,
+        message_text TEXT NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id)
+        FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id),
+        FOREIGN KEY (sender_id) REFERENCES users(id)
     )
     ''')
+
+    try:
+        _ensure_chat_columns(cursor)
+        conn.commit()
+    except Exception:
+        pass
     
     # Insert default admin user if not exists
     try:
@@ -1989,6 +1997,23 @@ def get_other_person_classifications_paginated(page=1, per_page=5):
         'prev_num': page - 1 if has_prev else None,
         'next_num': page + 1 if has_next else None
     }
+
+def _ensure_chat_columns(cursor):
+    """Ensure chat tables have columns expected by simple_chat (safe on existing DBs)."""
+    columns_to_add = [
+        ('chat_conversations', 'admin_id', 'INTEGER'),
+        ('chat_messages', 'sender_id', 'INTEGER'),
+        ('chat_messages', 'message_text', 'TEXT'),
+    ]
+    for table, column, col_type in columns_to_add:
+        try:
+            cursor.execute(f"SELECT {column} FROM {table} LIMIT 1")
+        except Exception:
+            try:
+                cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+            except Exception:
+                pass
+
 
 def _ensure_patient_columns(cursor):
     """Ensure patient_name, patient_age, patient_gender columns exist on classification_history (SQLite-safe)."""

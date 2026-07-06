@@ -2323,8 +2323,11 @@ def get_combined_charts_data():
         
     except Exception as e:
         logger.error(f"Error getting combined charts data: {str(e)}")
-        # Return original data if there's an error
-        return db.get_admin_dashboard_charts()
+        return {
+            'age_groups': {},
+            'gender_stats': {},
+            'severity_stats': {},
+        }
 
 
 def normalize_severity_category(category):

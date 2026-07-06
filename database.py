@@ -137,6 +137,31 @@ def sql_age_years_from_dob(dob_column='date_of_birth'):
     return f"(strftime('%Y', 'now') - strftime('%Y', {dob_column}))"
 
 
+AGE_GROUP_SORT_ORDER = {
+    'Under 18': 1,
+    '18-30': 2,
+    '31-45': 3,
+    '46-60': 4,
+    'Over 60': 5,
+}
+
+SEVERITY_SORT_ORDER = {
+    'Normal': 1,
+    'Mild Anemia': 2,
+    'Moderate Anemia': 3,
+    'Severe Anemia': 4,
+    'Other': 5,
+}
+
+
+def _rows_to_count_dict(rows, label_key, sort_key=None):
+    """Convert grouped query rows into a label->count dict with optional sort order."""
+    data = {row[label_key]: row['count'] for row in rows}
+    if sort_key is None:
+        return data
+    return dict(sorted(data.items(), key=lambda item: sort_key.get(item[0], 99)))
+
+
 def fetch_last_insert_id(cursor):
     """Read inserted row id after INSERT (PostgreSQL requires RETURNING)."""
     if USE_POSTGRES:
@@ -1380,17 +1405,9 @@ def get_admin_dashboard_charts():
             COUNT(*) as count
         FROM users 
         WHERE date_of_birth IS NOT NULL AND is_admin = 0
-        GROUP BY age_group
-        ORDER BY 
-            CASE age_group
-                WHEN 'Under 18' THEN 1
-                WHEN '18-30' THEN 2
-                WHEN '31-45' THEN 3
-                WHEN '46-60' THEN 4
-                WHEN 'Over 60' THEN 5
-            END
+        GROUP BY 1
     """)
-    age_groups = {row['age_group']: row['count'] for row in cursor.fetchall()}
+    age_groups = _rows_to_count_dict(cursor.fetchall(), 'age_group', AGE_GROUP_SORT_ORDER)
 
     # Gender distribution
     execute_sql(cursor, """
@@ -1414,17 +1431,9 @@ def get_admin_dashboard_charts():
             COUNT(*) as count
         FROM classification_history
         WHERE predicted_class IS NOT NULL
-        GROUP BY severity
-        ORDER BY 
-            CASE severity
-                WHEN 'Normal' THEN 1
-                WHEN 'Mild Anemia' THEN 2
-                WHEN 'Moderate Anemia' THEN 3
-                WHEN 'Severe Anemia' THEN 4
-                WHEN 'Other' THEN 5
-            END
+        GROUP BY 1
     """)
-    severity_stats = {row['severity']: row['count'] for row in cursor.fetchall()}
+    severity_stats = _rows_to_count_dict(cursor.fetchall(), 'severity', SEVERITY_SORT_ORDER)
 
     conn.close()
 
@@ -1557,9 +1566,9 @@ def get_applied_imported_data():
             FROM classification_import_data cid
             JOIN imported_files f ON cid.file_id = f.id
             WHERE f.is_applied = 1
-            GROUP BY age_group
+            GROUP BY 1
         ''')
-        age_groups = {row['age_group']: row['count'] for row in cursor.fetchall()}
+        age_groups = _rows_to_count_dict(cursor.fetchall(), 'age_group', AGE_GROUP_SORT_ORDER)
         
         # Gender stats from applied imported data
         execute_sql(cursor, '''
@@ -1593,9 +1602,9 @@ def get_applied_imported_data():
                 END as age_group,
                 COUNT(*) as count
             FROM classification_import_data
-            GROUP BY age_group
+            GROUP BY 1
         ''')
-        age_groups = {row['age_group']: row['count'] for row in cursor.fetchall()}
+        age_groups = _rows_to_count_dict(cursor.fetchall(), 'age_group', AGE_GROUP_SORT_ORDER)
         
         execute_sql(cursor, '''
             SELECT gender, COUNT(*) as count

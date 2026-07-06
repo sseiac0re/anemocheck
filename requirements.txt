@@ -8,7 +8,7 @@ pandas
 scikit-learn
 matplotlib
 joblib
-gunicorn
+gunicorn[gevent]
 email_validator
 sib-api-v3-sdk
 requests

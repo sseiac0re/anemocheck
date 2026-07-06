@@ -84,6 +84,12 @@
         .input-group .form-control:focus + .btn-outline-secondary {
             border-color: #c62828;
         }
+
+        .brand-logo {
+            width: 30px;
+            height: 30px;
+            object-fit: contain;
+        }
     </style>
 
     {% block head_content %}{% endblock %}
@@ -92,7 +98,7 @@
     <nav class="navbar navbar-expand-lg navbar-light bg-white shadow-sm mb-4">
         <div class="container">
             <a class="navbar-brand fw-bold d-flex align-items-center" href="{{ url_for('index') }}">
-                <img src="{{ url_for('static', filename='img/logo.svg') }}" alt="Logo" width="30" height="30" class="me-2">
+                <img src="{{ url_for('static', filename='img/logo_only.png') }}" alt="AnemoCheck Logo" class="me-1 brand-logo">
                 AnemoCheck
             </a>
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">

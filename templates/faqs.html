@@ -6,11 +6,18 @@
     <title>FAQs - AnemoCheck</title>
     <link rel="stylesheet" href="https://cdn.replit.com/agent/bootstrap-agent-dark-theme.min.css">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/custom.css') }}">
+    <style>
+        .brand-logo {
+            width: 30px;
+            height: 30px;
+            object-fit: contain;
+        }
+    </style>
 </head>
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
         <div class="container">
-            <a class="navbar-brand" href="/"><img src="{{ url_for('static', filename='logo.svg') }}" alt="AnemoCheck Logo" height="30"> AnemoCheck</a>
+            <a class="navbar-brand" href="/"><img src="{{ url_for('static', filename='img/logo_only.png') }}" alt="AnemoCheck Logo" class="brand-logo me-1">AnemoCheck</a>
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
                 <span class="navbar-toggler-icon"></span>
             </button>
